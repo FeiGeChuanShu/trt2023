@@ -101,6 +101,10 @@ cd /root/workspace/tensorrt_llm_july-release-v1/
 
 # 如果需要重新编译所有tensorrt_llm代码
 ./scripts/build_wheel.py --clean --trt_root /usr/local/TensorRT-9.0.0.2/
+
+# 编译完成之后安装tensorrt_llm
+pip3 install ./build/tensorrt_llm-0.1.3-py3-none-any.whl
+
 ```
 
 - 2.运行example中的代码
