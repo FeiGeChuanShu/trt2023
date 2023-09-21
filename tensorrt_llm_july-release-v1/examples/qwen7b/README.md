@@ -67,7 +67,7 @@ python3 run.py --max_output_len=8 \
                --tokenizer_dir ./model \
                --engine_dir=./trt_engines/qwen/7B/trt_engines/fp16/1-gpu/
                
-# With weight_only inference
+# With weight_only int8 inference
 python3 run.py --max_output_len=8 \
                --tokenizer_dir ./model \
                --engine_dir=./trt_engines/qwen/7B/trt_engines/weight_only/1-gpu/
@@ -104,28 +104,7 @@ python summarize.py --test_trt_llm \
                     --engine_dir ./trt_engines/qwen/7B/trt_engines/weight_only/1-gpu/
 ```
 
-### 5. Benchmark using the Qwen model
-```bash
-# Run benchmark using the Qwen 7B TRT-LLM model in FP16.
-python ./benchmarks/benchmark.py \
-    -m qwen \
-    --mode plugin \
-    --batch_size "1" \
-    --input_output_len "10,512" \
-    --engine_dir ./trt_engines/qwen/7B/trt_engines/fp16/1-gpu/
-    
-# Run benchmark using the Qwen 7B TRT-LLM model quantized to INT8.
-python ./benchmarks/benchmark.py \
-    -m qwen \
-    --mode plugin \
-    --batch_size "1" \
-    --input_output_len "10,512" \
-    --use_weight_only \
-    --engine_dir ./trt_engines/qwen/7B/trt_engines/weight_only/1-gpu/
-
-```
-
-### 6. INT8 KV Cache, export weights & scales for TensorRT-LLM
+### 5. INT8 KV Cache, export weights & scales for TensorRT-LLM
 
 For int8 kv cache, [`hf_qwen_convert.py`](./hf_qwen_convert.py) features a
 `--calibrate-kv-cache, -kv` option. Setting `-kv` will calibrate the model as
@@ -172,8 +151,28 @@ python summarize.py --test_trt_llm \
                     --data_type fp16 \
                     --engine_dir ./trt_engines/qwen/7B/trt_engines/int8_kv_cache/1-gpu/
 ```
-#### Benchmark using the Qwen model
+
+
+### 6. Benchmark using the Qwen model
+
 ```bash
+# Run benchmark using the Qwen 7B TRT-LLM model in FP16.
+python ./benchmarks/benchmark.py \
+    -m qwen \
+    --mode plugin \
+    --batch_size "1" \
+    --input_output_len "10,512" \
+    --engine_dir ./trt_engines/qwen/7B/trt_engines/fp16/1-gpu/
+    
+# Run benchmark using the Qwen 7B TRT-LLM model quantized to INT8.
+python ./benchmarks/benchmark.py \
+    -m qwen \
+    --mode plugin \
+    --batch_size "1" \
+    --input_output_len "10,512" \
+    --use_weight_only \
+    --engine_dir ./trt_engines/qwen/7B/trt_engines/weight_only/1-gpu/
+
 # Run benchmark using the Qwen 7B TRT-LLM model with int8 kv cache.
 python ./benchmarks/benchmark.py \
     -m qwen \
@@ -182,4 +181,5 @@ python ./benchmarks/benchmark.py \
     --input_output_len "10,512" \
     --int8_kv_cache \
     --engine_dir ./trt_engines/qwen/7B/trt_engines/int8_kv_cache/1-gpu/
+
 ```

@@ -321,7 +321,7 @@ Output:  chef before moving to London in the late
 
 ### 未来工作
 
-基于TensorRT-LLM和Plugin我们已经搭建了Qwen-7B模型并做了一定的优化，由于时间关系并未进行smoothquant等量化，未来希望持续进一步的优化，未来工作:
+基于TensorRT-LLM和Plugin我们已经搭建了Qwen-7B模型并做了一定的优化，由于时间关系并未进行SmoothQuant等量化，真的非常遗憾，未来希望持续进一步的优化，未来工作:
 - [ ] 整体精度还存在优化空间，未来将进一步优化。
 - [ ] pipeline的速度存在一定优化空间，替换更加高效的sample采样方案。
 - [ ] rmsnorm plugin和swiglu plugin速度存在优化空间，未来将进一步优化。
