@@ -33,6 +33,8 @@ docker pull registry.cn-hangzhou.aliyuncs.com/trt-hackathon/trt-hackathon:final_
 docker run --gpus all --name trt2023 -it --rm --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 registry.cn-hangzhou.aliyuncs.com/trt-hackathon/trt-hackathon:final_v1
 # 如果容器已经存在并停止
 docker start trt2023
+# 使用docker ps -s查看运行容器，如果正在运行，使用如下命令进入容器操作
+docker exec -it trt2023 bash
 ```
 
 </details>
