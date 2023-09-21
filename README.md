@@ -290,6 +290,15 @@ python summarize.py --test_trt_llm \
   
 关于精度测试的验证仿照tests中的代码，采取的方式是绝对误差和相对误差的均值，中位数和最大值。运行examples/qwen7b/test_qwen.py和examples/qwen7b/test_qwen_weight_only.py程序可以得到运行结果  
 
+```shell
+# 评估HF输出和TRT-LLM输出的FP16模型精度是否对齐
+python test_qwen.py
+
+# 评估HF输出和TRT-LLM输出的INT8模型精度是否对齐
+python test_qwen_weight_only.py
+
+```
+
   |  DataType  |  max abs  |  median abs  |  mean abs  |  max rel  |  median rel  |  mean rel  |  
   | :--------: | :-------: | :----------: | :--------: | :-------: | :----------: | :--------: |  
   |    fp16    |  0.0137   |   0.00195    |  0.00242   |  0.21144  |   0.00225    |  0.00505   |  
@@ -300,7 +309,7 @@ python summarize.py --test_trt_llm \
 </div>  
 
   - FP16精度损失主要在gpt attention plugin中，该plugin输出结果和Huggingface输出结果有一定的误差  
-  - INT8由于只是对weight进行了对称量化，没有经过SmoothQuant等量化策略，因此输出结果和uggingface输出结果有较大的误差  
+  - INT8由于只是对weight进行了对称量化，没有经过SmoothQuant等量化策略，因此输出结果和Huggingface输出结果有较大的误差  
 
 ### 送分题答案（可选）
 
