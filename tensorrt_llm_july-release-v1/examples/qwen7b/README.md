@@ -6,7 +6,7 @@ This document shows how to build and run a Qwen-7B model in TensorRT-LLM on both
 
 The TensorRT-LLM Qwen-7B implementation can be found in [tensorrt_llm/models/qwen/model.py](../../tensorrt_llm/models/qwen/model.py). The TensorRT-LLM Qwen-7B example code is located in [`examples/qwen7b`](./). There are three main files in that folder::
 
- * [`build.py`](./build.py) to build the [TensorRT](https://developer.nvidia.com/tensorrt) engine(s) needed to run the LLaMA model,
+ * [`build.py`](./build.py) to build the [TensorRT](https://developer.nvidia.com/tensorrt) engine(s) needed to run the Qwen-7B model,
  * [`run.py`](./run.py) to run the inference on an input text,
  * [`summarize.py`](./summarize.py) to summarize the articles in the [cnn_dailymail](https://huggingface.co/datasets/cnn_dailymail) dataset using the model.
 
