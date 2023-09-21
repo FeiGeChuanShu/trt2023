@@ -286,7 +286,8 @@ python summarize.py --test_trt_llm \
 <img src="./doc/summarize_trt_int8.jpg"/>
 </div>  
 
-  - 精度测试
+  - 精度测试  
+  
 关于精度测试的验证仿照tests中的代码，采取的方式是绝对误差和相对误差的均值，中位数和最大值。运行examples/qwen7b/test_qwen.py和examples/qwen7b/test_qwen_weight_only.py程序可以得到运行结果  
 
   |  DataType  |  max abs  |  median abs  |  mean abs  |  max rel  |  median rel  |  mean rel  |  
