@@ -94,10 +94,12 @@ tensorrt_llm_july-release-v1/cpp/tensorrt_llm/plugins/swigluPlugin/swigluPlugin.
 
 ```shell
 
-#官方的docker中TensorRT位于/usr/local/TensorRT-9.0.0.2/
+# 官方的docker中TensorRT位于/usr/local/TensorRT-9.0.0.2/
 cd /root/workspace/tensorrt_llm_july-release-v1/
 
-# 重新编译所有tensorrt_llm代码
+# 按照/root/workspace/tensorrt_llm_july-release-v1/README.md中说明进行安装和编译
+
+# 如果需要重新编译所有tensorrt_llm代码
 ./scripts/build_wheel.py --clean --trt_root /usr/local/TensorRT-9.0.0.2/
 ```
 
