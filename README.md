@@ -299,6 +299,8 @@ python summarize.py --test_trt_llm \
 <img src="./doc/fp16_int8_precision.jpg"/>
 </div>  
 
+  - FP16精度损失主要在gpt attention plugin中，该plugin输出结果和Huggingface输出结果有一定的误差  
+  - INT8由于只是对weight进行了对称量化，没有经过SmoothQuant等量化策略，因此输出结果和uggingface输出结果有较大的误差  
 
 ### 送分题答案（可选）
 
