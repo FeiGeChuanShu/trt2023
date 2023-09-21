@@ -12,7 +12,7 @@ The TensorRT-LLM Qwen-7B implementation can be found in [tensorrt_llm/models/qwe
 
 ## Usage
 
-The TensorRT-LLM Qwen-7B example code locates at [examples/qwen](./). It takes HF weights as input, and builds the corresponding TensorRT engines. The number of TensorRT engines depends on the number of GPUs used to run inference.
+The TensorRT-LLM Qwen-7B example code locates at [examples/qwen7b](./). It takes HF weights as input, and builds the corresponding TensorRT engines. The number of TensorRT engines depends on the number of GPUs used to run inference.
 
 
 ### 1. Download weights from HuggingFace Transformers
