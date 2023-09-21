@@ -1456,9 +1456,19 @@ __global__ void masked_multihead_attention_kernel(Multihead_attention_params<T> 
         {
             mmha::vec_from_smem_transpose(q, q_smem_, transpose_idx, smem_pitch);
             mmha::vec_from_smem_transpose(k, k_smem, transpose_idx, smem_pitch);
-
+            float rotary_emb_base = 10000.f;
+            if (params.use_dynamic_ntk) {
+                // +1 because of `length_per_sample == context_length - 1`
+                rotary_emb_base = mmha::rotary_embedding_get_base(params.length_per_sample[bi] + 1,
+                                                            params.max_position_embeddings,
+                                                            params.rotary_embedding_dim,
+                                                            rotary_emb_base);
+            }
             mmha::apply_rotary_embedding(
                 q, k, transpose_idx / tidx_factor, params.rotary_embedding_dim, timestep_minus_padd);
+
+            //mmha::apply_rotary_embedding(
+            //    q, k, transpose_idx / tidx_factor, params.rotary_embedding_dim, rotary_emb_base, timestep_minus_padd);
 
             mmha::write_smem_transpose(k, k_smem, transpose_idx, smem_pitch);
             mmha::write_smem_transpose(q, q_smem_, transpose_idx, smem_pitch);
@@ -1474,7 +1484,13 @@ __global__ void masked_multihead_attention_kernel(Multihead_attention_params<T> 
 
         __syncthreads();
     }
-
+    if (params.use_logn_attn) {
+        T log_n_scaling;
+        // +1 because of `length_per_sample == context_length - 1`
+        mmha::convert_from_float(&log_n_scaling,
+                            mmha::logn_attn_get_scaling(params.length_per_sample[bi] + 1, params.max_position_embeddings));
+        q = mul<Qk_vec_k, T, Qk_vec_k>(log_n_scaling, q);
+    }
     constexpr bool is_dh_max = Dh == Dh_MAX;
 
     if (is_valid_vec_idx)

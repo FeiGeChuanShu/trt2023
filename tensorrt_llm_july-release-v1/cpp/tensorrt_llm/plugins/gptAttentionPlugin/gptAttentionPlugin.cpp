@@ -39,10 +39,10 @@ GPTAttentionPlugin::GPTAttentionPlugin(int num_heads, int head_size, int unidire
     int rotary_embedding_dim, bool neox_rotary_style, tensorrt_llm::kernels::ContextFMHAType context_fmha_type,
     bool multi_block_mode, bool multi_query_mode, bool int8_kv_cache, bool fp8_kv_cache, bool remove_input_padding,
     tensorrt_llm::kernels::AttentionMaskType mask_type, bool paged_kv_cache, nvinfer1::DataType type,
-    bool in_flight_batching)
+    bool in_flight_batching, int max_position_embeddings, bool use_dynamic_ntk, bool use_logn_attn)
     : GPTAttentionPluginCommon(num_heads, head_size, unidirectional, q_scaling, rotary_embedding_dim, neox_rotary_style,
         context_fmha_type, multi_block_mode, multi_query_mode, int8_kv_cache, fp8_kv_cache, remove_input_padding,
-        mask_type, paged_kv_cache, type)
+        mask_type, paged_kv_cache, type, max_position_embeddings, use_dynamic_ntk, use_logn_attn)
     , mInFlightBatching(in_flight_batching)
 {
     PLUGIN_ASSERT(!mInFlightBatching || mRemovePadding);
@@ -53,9 +53,10 @@ GPTAttentionPlugin::GPTAttentionPlugin(const void* data, size_t length)
 {
     const char *d = reinterpret_cast<const char*>(data), *a = d;
     d += GPTAttentionPluginCommon::getCommonSerializationSize();
-
     read(d, mInFlightBatching);
+
     PLUGIN_ASSERT(d == a + length);
+    
     PLUGIN_ASSERT(!mInFlightBatching || mRemovePadding);
 }
 
@@ -354,8 +355,11 @@ int GPTAttentionPlugin::enqueueSome(int32_t seqIdxBeg, int32_t localNbSeq, int32
         {
             num_tokens = inputDesc[getInputTensorIdx()].dims.d[1];
         }
-
-        enqueueContext<T, KVCacheBuffer>(attention_input, max_input_len, max_seq_len, input_lengths,
+        // enqueueContext<T, KVCacheBuffer>(attention_input, max_input_len, max_seq_len, input_lengths,
+        //     kv_scale_orig_quant, kv_scale_quant_orig, context_buf_, key_value_cache, block_pointers, batch_size,
+        //     num_tokens, tokens_per_block, max_blocks_per_sequence, workspace, stream);
+        //for qwen
+        enqueueContext<T, KVCacheBuffer>(attention_input, max_input_len, max_seq_len, input_lengths, past_kv_len,
             kv_scale_orig_quant, kv_scale_quant_orig, context_buf_, key_value_cache, block_pointers, batch_size,
             num_tokens, tokens_per_block, max_blocks_per_sequence, workspace, stream);
     }
@@ -493,13 +497,16 @@ IPluginV2* GPTAttentionPluginCreator::createPlugin(const char* name, const Plugi
             static_cast<ContextFMHAType>(p.getScalar<int8_t>("context_fmha_type").value()),
             static_cast<bool>(p.getScalar<int8_t>("multi_block_mode").value()),
             static_cast<bool>(p.getScalar<int8_t>("multi_query_mode").value()),
-            static_cast<bool>(p.getScalar<int32_t>("int8_kv_cache").value()),
-            static_cast<bool>(p.getScalar<int32_t>("fp8_kv_cache").value()),
+            static_cast<bool>(p.getScalar<int8_t>("int8_kv_cache").value()),
+            static_cast<bool>(p.getScalar<int8_t>("fp8_kv_cache").value()),
             static_cast<bool>(p.getScalar<int8_t>("remove_input_padding").value()),
             static_cast<AttentionMaskType>(p.getScalar<int32_t>("mask_type").value()),
-            static_cast<bool>(p.getScalar<int32_t>("paged_kv_cache").value()),
+            static_cast<bool>(p.getScalar<int8_t>("paged_kv_cache").value()),
             static_cast<nvinfer1::DataType>(p.getScalar<int32_t>("type_id").value()),
-            p.getScalar<int32_t>("in_flight_batching").value());
+            static_cast<bool>(p.getScalar<int8_t>("in_flight_batching").value()),
+            p.getScalar<int32_t>("max_position_embeddings").value(),
+            static_cast<bool>(p.getScalar<int8_t>("use_dynamic_ntk").value()),
+            static_cast<bool>(p.getScalar<int8_t>("use_logn_attn").value()));
         obj->setPluginNamespace(mNamespace.c_str());
         return obj;
     }

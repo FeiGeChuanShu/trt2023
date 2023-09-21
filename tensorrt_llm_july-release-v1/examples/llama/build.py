@@ -154,7 +154,7 @@ def parse_arguments():
     parser.add_argument(
         '--output_dir',
         type=str,
-        default='llama_outputs',
+        default='trt_engines',
         help=
         'The path to save the serialized engine files, timing cache file and model configs'
     )

@@ -71,9 +71,12 @@ struct FusedQKVMaskedAttentionDispatchParams
     int inference_batch_size;
     int beam_width;
     int head_num;
+    int max_position_embeddings;
     int size_per_head;
     int rotary_embedding_dim;
     bool neox_rotary_style;
+    bool use_logn_attn;
+    bool use_dynamic_ntk;
     int max_seq_len;
     const int* prefix_prompt_lengths;
     int max_prefix_prompt_length;
@@ -203,6 +206,9 @@ void fusedQKV_masked_attention_dispatch(
 
     params.multi_query_mode = input_params.multi_query_mode;
 
+    params.max_position_embeddings = input_params.max_position_embeddings;
+    params.use_dynamic_ntk = input_params.use_dynamic_ntk;
+    params.use_logn_attn = input_params.use_logn_attn;
     masked_multihead_attention(params, input_params.kv_block_array, stream);
 }
 
@@ -218,7 +224,8 @@ template void fusedQKV_masked_attention_dispatch(
 GPTAttentionPluginCommon::GPTAttentionPluginCommon(int num_heads, int head_size, int unidirectional, float q_scaling,
     int rotary_embedding_dim, bool neox_rotary_style, ContextFMHAType context_fmha_type, bool multi_block_mode,
     bool multi_query_mode, bool int8_kv_cache, bool fp8_kv_cache, bool remove_input_padding,
-    tensorrt_llm::kernels::AttentionMaskType mask_type, bool paged_kv_cache, nvinfer1::DataType type)
+    tensorrt_llm::kernels::AttentionMaskType mask_type, bool paged_kv_cache, nvinfer1::DataType type,
+    int max_position_embeddings, bool use_dynamic_ntk, bool use_logn_attn)
     : mNumHeads(num_heads)
     , mHeadSize(head_size)
     , mUnidirectional(unidirectional)
@@ -235,6 +242,9 @@ GPTAttentionPluginCommon::GPTAttentionPluginCommon(int num_heads, int head_size,
     , mFp8KVCache(fp8_kv_cache)
     , mRemovePadding(remove_input_padding)
     , mPagedKVCache(paged_kv_cache)
+    , mMaxPositionEmbeddings(max_position_embeddings)
+    , mUseDynamicNtk(use_dynamic_ntk)
+    , mUseLognAttn(use_logn_attn)
 {
     // pre-check whether FMHA is supported in order to save memory allocation
     mEnableContextFMHA = mEnableContextFMHA && (mType == DataType::kHALF || mType == DataType::kBF16)
@@ -261,6 +271,9 @@ GPTAttentionPluginCommon::GPTAttentionPluginCommon(const void* data, size_t leng
     read(d, mMaskType);
     read(d, mPagedKVCache);
     read(d, mType);
+    read(d, mMaxPositionEmbeddings);
+    read(d, mUseDynamicNtk);
+    read(d, mUseLognAttn);
     PLUGIN_ASSERT(d == a + length);
 }
 
@@ -619,6 +632,271 @@ int GPTAttentionPluginCommon::enqueueContext(T const* attention_input,
     return 0;
 }
 
+//for qwen
+template <typename T, typename KVCacheBuffer>
+int GPTAttentionPluginCommon::enqueueContext(T const* attention_input,
+    int32_t input_seq_length, // padded input length
+    int32_t max_seq_length,   // cache capacity
+    int32_t const* input_lengths, int32_t past_kv_length, 
+    float const* kv_scale_orig_quant, float const* kv_scale_quant_orig, T* context_buf_,
+    void* key_value_cache, void* block_pointers, int32_t batch_size, int32_t num_tokens, int32_t tokens_per_block,
+    int32_t max_blocks_per_sequence, void* workspace, cudaStream_t stream)
+{
+    const int num_heads = mNumHeads;
+    const int num_kv_heads = mMultiQueryMode ? 1 : mNumHeads;
+    const int head_size = mHeadSize;
+    const int local_hidden_units_qo = num_heads * head_size;
+    const int local_hidden_units_kv = mMultiQueryMode ? head_size : local_hidden_units_qo;
+    const bool neox_rotary_style = mNeoxRotaryStyle;
+    const float q_scaling = mQScaling;
+    const int relative_attention_bias_stride = 0;
+    const T* relative_attention_bias = nullptr;
+    const bool* finished = nullptr;
+    const bool has_ia3 = false;
+
+    KVCacheBuffer kv_cache_buffer;
+    const auto elem_size = (mInt8KVCache || mFp8KVCache) ? sizeof(int8_t) : sizeof(T);
+    if (mPagedKVCache)
+    {
+        using BufferDataType = typename KVCacheBufferDataType<KVCacheBuffer>::Type;
+        kv_cache_buffer = KVCacheBuffer(
+            batch_size, max_blocks_per_sequence, tokens_per_block, num_kv_heads * head_size * elem_size);
+        kv_cache_buffer.data = reinterpret_cast<BufferDataType*>(block_pointers);
+    }
+    else
+    {
+        using BufferDataType = typename KVCacheBufferDataType<KVCacheBuffer>::Type;
+        kv_cache_buffer = KVCacheBuffer(batch_size, 1, max_seq_length, num_kv_heads * head_size * elem_size);
+        kv_cache_buffer.data = reinterpret_cast<BufferDataType*>(key_value_cache);
+    }
+
+    // const int int8_mode = 0;
+    const QuantOption quant_option = QuantOption::make(false, // per_column_scaling
+        false);                                               // per_token_scaling
+    const float* qkv_scale_out = nullptr;
+    const float* attention_out_scale = nullptr;
+
+    const int* ia3_tasks = nullptr;
+    const T* ia3_key_weights = nullptr;
+    const T* ia3_value_weights = nullptr;
+
+    const bool multi_block_mode = false;
+    const int max_seq_len_tile = 0;
+    T* partial_out = nullptr;
+    float* partial_sum = nullptr;
+    float* partial_max = nullptr;
+    int* block_counter = nullptr;
+
+    const int request_batch_size = batch_size;
+    const int request_seq_length = input_seq_length;
+
+    auto cublasHandle = mCublasWrapper->getCublasHandle();
+    PLUGIN_CUBLASASSERT(cublasSetStream(cublasHandle, stream));
+    mCublasWrapper->setStream(stream);
+    mCublasWrapper->setWorkspace(workspace);
+    if constexpr (std::is_same_v<T, half>)
+    {
+        mCublasWrapper->setFP16GemmConfig();
+    }
+    else if constexpr (std::is_same_v<T, float>)
+    {
+        mCublasWrapper->setFP32GemmConfig();
+    }
+#ifdef ENABLE_BF16
+    else if constexpr (std::is_same_v<T, __nv_bfloat16>)
+    {
+        mCublasWrapper->setBF16GemmConfig();
+    }
+#endif
+
+    const size_t attention_mask_size
+        = mEnableContextFMHA ? 0 : sizeof(T) * batch_size * input_seq_length * input_seq_length;
+    const size_t cu_seqlens_size = sizeof(int) * (batch_size + 1);
+    const size_t q_buf_2_size = sizeof(T) * batch_size * input_seq_length * local_hidden_units_qo;
+    const size_t k_buf_2_size = sizeof(T) * batch_size * input_seq_length * local_hidden_units_kv;
+    const size_t v_buf_2_size = sizeof(T) * batch_size * input_seq_length * local_hidden_units_kv;
+    const size_t qk_buf_size
+        = mEnableContextFMHA ? 0 : sizeof(T) * batch_size * mNumHeads * input_seq_length * input_seq_length;
+    const size_t qkv_buf_2_size
+        = mEnableContextFMHA ? 0 : sizeof(T) * batch_size * input_seq_length * local_hidden_units_qo;
+    const size_t qk_buf_float_size
+        = mEnableContextFMHA ? 0 : sizeof(float) * batch_size * mNumHeads * input_seq_length * input_seq_length;
+    const size_t padding_offset_size = sizeof(int) * batch_size * input_seq_length;
+
+    const bool is_qk_buf_float_ = true;
+
+    // Workspace pointer shift
+    int8_t* workspace_byte_ptr = reinterpret_cast<int8_t*>(workspace);
+    size_t offset = CUBLAS_WORKSPACE_SIZE;
+
+    T* attention_mask = reinterpret_cast<T*>(nextWorkspacePtr(workspace_byte_ptr, offset, attention_mask_size));
+    int* cu_seqlens = reinterpret_cast<int*>(nextWorkspacePtr(workspace_byte_ptr, offset, cu_seqlens_size));
+    T* q_buf_2_ = reinterpret_cast<T*>(nextWorkspacePtr(workspace_byte_ptr, offset, q_buf_2_size));
+    T* k_buf_2_ = reinterpret_cast<T*>(nextWorkspacePtr(workspace_byte_ptr, offset, k_buf_2_size));
+    T* v_buf_2_ = reinterpret_cast<T*>(nextWorkspacePtr(workspace_byte_ptr, offset, v_buf_2_size));
+    T* qk_buf_ = reinterpret_cast<T*>(nextWorkspacePtr(workspace_byte_ptr, offset, qk_buf_size));
+    T* qkv_buf_2_ = reinterpret_cast<T*>(nextWorkspacePtr(workspace_byte_ptr, offset, qkv_buf_2_size));
+    float* qk_buf_float_ = reinterpret_cast<float*>(nextWorkspacePtr(workspace_byte_ptr, offset, qk_buf_float_size));
+    int* padding_offset = reinterpret_cast<int*>(nextWorkspacePtr(workspace_byte_ptr, offset, padding_offset_size));
+
+    // build attention_mask, cu_seqlens, and padding_offset tensors
+    BuildDecoderInfoParams<T> params;
+    memset(&params, 0, sizeof(params));
+    params.seqOffsets = cu_seqlens;
+    params.paddingOffsets = padding_offset;
+    params.attentionMask = attention_mask;
+    params.seqLengths = input_lengths;
+    params.batchSize = batch_size;
+    params.maxSeqLength = input_seq_length;
+    params.numTokens = num_tokens;
+    params.attentionMaskType = mMaskType;
+    invokeBuildDecoderInfo(params, stream);
+    sync_check_cuda_error();
+
+    // FIXME(qijun): a temporary solution to make sure the padding part of key/value buffer is 0
+    cudaMemsetAsync(k_buf_2_, 0, (v_buf_2_ - k_buf_2_) * sizeof(T) + v_buf_2_size, stream);
+
+    invokeAddFusedQKVBiasTranspose(q_buf_2_, k_buf_2_, v_buf_2_, const_cast<T*>(attention_input), input_lengths, past_kv_length,
+        mRemovePadding ? padding_offset : nullptr, request_batch_size, request_seq_length, num_tokens, mNumHeads,
+        mHeadSize, mRotaryEmbeddingDim, mMaxPositionEmbeddings, neox_rotary_style, (float*) nullptr, 0, mMultiQueryMode,
+         mUseDynamicNtk, mUseLognAttn, stream);
+    sync_check_cuda_error();
+
+    const KvCacheDataType cache_type
+        = mInt8KVCache ? KvCacheDataType::INT8 : (mFp8KVCache ? KvCacheDataType::FP8 : KvCacheDataType::BASE);
+    invokeTranspose4dBatchMajor(k_buf_2_, v_buf_2_, kv_cache_buffer, request_batch_size, request_seq_length,
+        max_seq_length, mHeadSize, mMultiQueryMode ? 1 : mNumHeads, cache_type, kv_scale_orig_quant, stream);
+    sync_check_cuda_error();
+
+    const cudaDataType_t gemm_data_type = CudaDataType<T>::value;
+    const int attention_seq_len_1 = request_seq_length; // q length
+    const int attention_seq_len_2 = request_seq_length; // kv length
+    const T qk_scale = static_cast<T>(1.0f / (sqrtf(mHeadSize * 1.0f) * q_scaling));
+    T* linear_bias_slopes = nullptr;
+
+    if (mEnableContextFMHA)
+    {
+        mFMHARunner->setup(request_batch_size, request_seq_length, num_tokens);
+        mFMHARunner->run(const_cast<T*>(attention_input), cu_seqlens, context_buf_, stream);
+    }
+    else
+    {
+        cudaDataType_t gemm_out_data_type = is_qk_buf_float_ ? CUDA_R_32F : gemm_data_type;
+        void* gemm_out_buf_ = is_qk_buf_float_ ? static_cast<void*>(qk_buf_float_) : static_cast<void*>(qk_buf_);
+        if (mMultiQueryMode)
+        {
+            // Attn_weight[b, h*s_q, s_k] = Q[b, h*s_q, d] * K'[b, d, s_k]
+            // Attn_weight'[b, s_k, h*s_q] = K[b, s_k, d] * Q'[b, d, h*s_q]
+            mCublasWrapper->stridedBatchedGemm(CUBLAS_OP_T, CUBLAS_OP_N,
+                attention_seq_len_2,                                   // n
+                attention_seq_len_1 * mNumHeads,                       // m
+                mHeadSize,                                             // k
+                1.0f, k_buf_2_, gemm_data_type,
+                mHeadSize,                                             // k
+                attention_seq_len_2 * mHeadSize,                       // n * k
+                q_buf_2_, gemm_data_type,
+                mHeadSize,                                             // k
+                attention_seq_len_1 * mNumHeads * mHeadSize,           // m * k
+                0.0f, gemm_out_buf_, gemm_out_data_type,
+                attention_seq_len_2,                                   // n
+                attention_seq_len_1 * mNumHeads * attention_seq_len_2, // m * n
+                request_batch_size,                                    // global batch size
+                CUDA_R_32F);
+        }
+        else // !mMultiQueryMode
+        {
+            // Attn_weight[b*h, s_q, s_k] = Q[b*h, s_q, d] * K'[b*h, d, s_k]
+            // Attn_weight'[b*h, s_k, s_q] = K[b*h, s_k, d] * Q'[b*h, d, s_q]
+            mCublasWrapper->stridedBatchedGemm(CUBLAS_OP_T, CUBLAS_OP_N,
+                attention_seq_len_2,             // n
+                attention_seq_len_1,             // m
+                mHeadSize,                       // k
+                1.0f, k_buf_2_, gemm_data_type,
+                mHeadSize,                       // k
+                attention_seq_len_2 * mHeadSize, // n * k
+                q_buf_2_, gemm_data_type,
+                mHeadSize,                       // k
+                attention_seq_len_1 * mHeadSize, // m * k
+                0.0f, gemm_out_buf_, gemm_out_data_type,
+                attention_seq_len_2,             // n
+                attention_seq_len_2 * attention_seq_len_1,
+                request_batch_size * mNumHeads,  // global batch size
+                CUDA_R_32F);
+        }
+        if (is_qk_buf_float_ == true)
+        {
+            MaskedSoftmaxParam<T, float> param;
+            param.attention_score = qk_buf_;       // (batch_size, head_num, q_length, k_length)
+            param.qk = qk_buf_float_;              // (batch_size, head_num, q_length, k_length)
+            param.attention_mask = attention_mask; // (batch_size, q_length, k_length)
+            param.batch_size = request_batch_size;
+            param.q_length = attention_seq_len_1;
+            param.k_length = attention_seq_len_2;
+            param.num_heads = mNumHeads;
+            param.qk_scale = qk_scale;
+            param.linear_bias_slopes = const_cast<T*>(linear_bias_slopes); // (head_num,), optional
+            invokeMaskedSoftmax(param, stream);
+        }
+        else
+        {
+            MaskedSoftmaxParam<T, T> param;
+            param.attention_score = qk_buf_;       // (batch_size, head_num, q_length, k_length)
+            param.qk = qk_buf_;                    // (batch_size, head_num, q_length, k_length)
+            param.attention_mask = attention_mask; // (batch_size, q_length, k_length)
+            param.batch_size = request_batch_size;
+            param.q_length = attention_seq_len_1;
+            param.k_length = attention_seq_len_2;
+            param.num_heads = mNumHeads;
+            param.qk_scale = qk_scale;
+            param.linear_bias_slopes = const_cast<T*>(linear_bias_slopes); // (head_num,), optional
+            invokeMaskedSoftmax(param, stream);
+        }
+        if (mMultiQueryMode)
+        {
+            // Attn_weight[b, h*s_q, s_k]
+            // O[b, h*s_q, d] = Attn_weight[b, h*s_q, s_k] * V[b, s_k, d]
+            // O'[b, d, h*s_q] = V'[b, d, s_k] * Attn_weight'[b, s_k, h*s_q]
+            mCublasWrapper->stridedBatchedGemm(CUBLAS_OP_N, CUBLAS_OP_N,
+                mHeadSize,                                             // n
+                mNumHeads * attention_seq_len_1,                       // m
+                attention_seq_len_2,                                   // k
+                v_buf_2_,
+                mHeadSize,                                             // n
+                mHeadSize * attention_seq_len_2,                       // n * k
+                qk_buf_,
+                attention_seq_len_2,                                   // k
+                attention_seq_len_2 * mNumHeads * attention_seq_len_1, // m * k
+                qkv_buf_2_,
+                mHeadSize,                                             // n
+                mHeadSize * mNumHeads * attention_seq_len_1,           // n * m
+                request_batch_size                                     // global batch size
+            );
+        }
+        else
+        {
+            // O[b*h, s_q, d] = Attn_weight[b*h, s_q, s_k] * V[b*h, s_k, d]
+            // O'[b*h, d, s_q] = V'[b*h, d, s_k] * Attn_weight'[b*h, s_k, s_q]
+            mCublasWrapper->stridedBatchedGemm(CUBLAS_OP_N, CUBLAS_OP_N, mHeadSize, attention_seq_len_1,
+                attention_seq_len_2, v_buf_2_, mHeadSize, attention_seq_len_2 * mHeadSize, qk_buf_, attention_seq_len_2,
+                attention_seq_len_1 * attention_seq_len_2, qkv_buf_2_, mHeadSize, attention_seq_len_1 * mHeadSize,
+                request_batch_size * mNumHeads);
+        }
+
+        if (!mRemovePadding)
+        {
+            invokeTransposeQKV(context_buf_, qkv_buf_2_, request_batch_size, attention_seq_len_1, mNumHeads, mHeadSize,
+                (float*) nullptr, 0, stream);
+        }
+        else
+        {
+            invokeTransposeAttentionOutRemovePadding(qkv_buf_2_, context_buf_, num_tokens, request_batch_size,
+                attention_seq_len_1, mNumHeads, mHeadSize, padding_offset, (float*) nullptr, 0, stream);
+        }
+    }
+    return 0;
+}
+
+
 template int GPTAttentionPluginCommon::enqueueContext<half, KVLinearBuffer>(half const*, int32_t, int32_t,
     int32_t const*, float const*, float const*, half*, void*, void*, int32_t, int32_t, int32_t, int32_t, void*,
     cudaStream_t);
@@ -645,6 +923,36 @@ template int GPTAttentionPluginCommon::enqueueContext<__nv_bfloat16, KVBlockArra
     int32_t, int32_t const*, float const*, float const*, __nv_bfloat16*, void*, void*, int32_t, int32_t, int32_t,
     int32_t, void*, cudaStream_t);
 #endif
+
+//////////////////qwen////////////////////
+template int GPTAttentionPluginCommon::enqueueContext<half, KVLinearBuffer>(half const*, int32_t, int32_t,
+    int32_t const*, int32_t, float const*, float const*, half*, void*, void*, int32_t, int32_t, int32_t, int32_t, void*,
+    cudaStream_t);
+
+template int GPTAttentionPluginCommon::enqueueContext<float, KVLinearBuffer>(float const*, int32_t, int32_t,
+    int32_t const*, int32_t, float const*, float const*, float*, void*, void*, int32_t, int32_t, int32_t, int32_t, void*,
+    cudaStream_t);
+
+#ifdef ENABLE_BF16
+template int GPTAttentionPluginCommon::enqueueContext<__nv_bfloat16, KVLinearBuffer>(__nv_bfloat16 const*, int32_t,
+    int32_t, int32_t const*, int32_t, float const*, float const*, __nv_bfloat16*, void*, void*, int32_t, int32_t, int32_t,
+    int32_t, void*, cudaStream_t);
+#endif
+
+template int GPTAttentionPluginCommon::enqueueContext<half, KVBlockArray>(half const*, int32_t, int32_t, int32_t const*,
+    int32_t, float const*, float const*, half*, void*, void*, int32_t, int32_t, int32_t, int32_t, void*, cudaStream_t);
+
+template int GPTAttentionPluginCommon::enqueueContext<float, KVBlockArray>(float const*, int32_t, int32_t, int32_t const*, 
+    int32_t, float const*, float const*, float*, void*, void*, int32_t, int32_t, int32_t, int32_t, void*, cudaStream_t);
+
+#ifdef ENABLE_BF16
+template int GPTAttentionPluginCommon::enqueueContext<__nv_bfloat16, KVBlockArray>(__nv_bfloat16 const*, int32_t,
+    int32_t, int32_t const*, int32_t, float const*, float const*, __nv_bfloat16*, void*, void*, int32_t, int32_t, int32_t,
+    int32_t, void*, cudaStream_t);
+#endif
+//////////////////qwen////////////////////
+
+
 
 template <typename T, typename KVCacheBuffer>
 int GPTAttentionPluginCommon::enqueueGeneration(T const* attention_input,
@@ -744,6 +1052,9 @@ int GPTAttentionPluginCommon::enqueueGeneration(T const* attention_input,
         dispatch_params.head_num = mNumHeads;
         dispatch_params.size_per_head = mHeadSize;
         dispatch_params.rotary_embedding_dim = mRotaryEmbeddingDim;
+        dispatch_params.max_position_embeddings = mMaxPositionEmbeddings;
+        dispatch_params.use_logn_attn = mUseLognAttn;
+        dispatch_params.use_dynamic_ntk = mUseDynamicNtk;
         dispatch_params.neox_rotary_style = mNeoxRotaryStyle;
         dispatch_params.max_seq_len = max_seq_lengths;
         dispatch_params.prefix_prompt_lengths = nullptr;
@@ -864,7 +1175,8 @@ size_t GPTAttentionPluginCommon::getCommonSerializationSize() noexcept
     return sizeof(mNumHeads) + sizeof(mHeadSize) + sizeof(mUnidirectional) + sizeof(mQScaling)
         + sizeof(mRotaryEmbeddingDim) + sizeof(mNeoxRotaryStyle) + sizeof(mEnableContextFMHA)
         + sizeof(mFMHAForceFP32Acc) + sizeof(mMultiBlockMode) + sizeof(mMultiQueryMode) + sizeof(mInt8KVCache)
-        + sizeof(mFp8KVCache) + sizeof(mRemovePadding) + sizeof(mMaskType) + sizeof(mPagedKVCache) + sizeof(mType);
+        + sizeof(mFp8KVCache) + sizeof(mRemovePadding) + sizeof(mMaskType) + sizeof(mPagedKVCache) + sizeof(mType)
+        + sizeof(mMaxPositionEmbeddings) + sizeof(mUseDynamicNtk) + sizeof(mUseLognAttn);
 }
 
 void GPTAttentionPluginCommon::serializeCommon(void* buffer) const noexcept
@@ -886,6 +1198,9 @@ void GPTAttentionPluginCommon::serializeCommon(void* buffer) const noexcept
     write(d, mMaskType);
     write(d, mPagedKVCache);
     write(d, mType);
+    write(d, mMaxPositionEmbeddings);
+    write(d, mUseDynamicNtk);
+    write(d, mUseLognAttn);
     assert(d == a + getCommonSerializationSize());
 }
 
@@ -919,12 +1234,17 @@ GPTAttentionPluginCreatorCommon::GPTAttentionPluginCreatorCommon()
     mPluginAttributes.emplace_back(PluginField("context_fmha_type", nullptr, PluginFieldType::kINT8, 0));
     mPluginAttributes.emplace_back(PluginField("multi_block_mode", nullptr, PluginFieldType::kINT8, 0));
     mPluginAttributes.emplace_back(PluginField("multi_query_mode", nullptr, PluginFieldType::kINT8, 0));
-    mPluginAttributes.emplace_back(PluginField("int8_kv_cache", nullptr, PluginFieldType::kINT32, 0));
-    mPluginAttributes.emplace_back(PluginField("fp8_kv_cache", nullptr, PluginFieldType::kINT32, 0));
+    mPluginAttributes.emplace_back(PluginField("int8_kv_cache", nullptr, PluginFieldType::kINT8, 0));
+    mPluginAttributes.emplace_back(PluginField("fp8_kv_cache", nullptr, PluginFieldType::kINT8, 0));
     mPluginAttributes.emplace_back(PluginField("remove_input_padding", nullptr, PluginFieldType::kINT8, 0));
     mPluginAttributes.emplace_back(PluginField("mask_type", nullptr, PluginFieldType::kINT32, 0));
-    mPluginAttributes.emplace_back(PluginField("paged_kv_cache", nullptr, PluginFieldType::kINT32, 0));
+    mPluginAttributes.emplace_back(PluginField("paged_kv_cache", nullptr, PluginFieldType::kINT8, 0));
     mPluginAttributes.emplace_back(PluginField("type_id", nullptr, PluginFieldType::kINT32, 1));
+    mPluginAttributes.emplace_back(PluginField("in_flight_batching", nullptr, PluginFieldType::kINT8, 0));
+    mPluginAttributes.emplace_back(PluginField("max_position_embeddings", nullptr, PluginFieldType::kINT32, -1));
+    mPluginAttributes.emplace_back(PluginField("use_dynamic_ntk", nullptr, PluginFieldType::kINT8, 0));
+    mPluginAttributes.emplace_back(PluginField("use_logn_attn", nullptr, PluginFieldType::kINT8, 0));
+    
     mFC.nbFields = mPluginAttributes.size();
     mFC.fields = mPluginAttributes.data();
 }

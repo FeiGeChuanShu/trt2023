@@ -34,6 +34,8 @@
 #include "tensorrt_llm/plugins/quantizeTensorPlugin/quantizeTensorPlugin.h"
 #include "tensorrt_llm/plugins/smoothQuantGemmPlugin/smoothQuantGemmPlugin.h"
 #include "tensorrt_llm/plugins/weightOnlyQuantMatmulPlugin/weightOnlyQuantMatmulPlugin.h"
+#include "tensorrt_llm/plugins/rmsnormPlugin/rmsnormPlugin.h"
+#include "tensorrt_llm/plugins/swigluPlugin/swigluPlugin.h"
 #include <algorithm>
 #include <array>
 #include <iostream>
@@ -166,6 +168,8 @@ extern "C"
         nvinfer1::initializePlugin<nvinfer1::plugin::QuantizeTensorPluginCreator>(logger, libNamespace);
         nvinfer1::initializePlugin<nvinfer1::plugin::WeightOnlyQuantMatmulPluginCreator>(logger, libNamespace);
         nvinfer1::initializePlugin<nvinfer1::plugin::LookupPluginCreator>(logger, libNamespace);
+        nvinfer1::initializePlugin<nvinfer1::plugin::RmsnormPluginCreator>(logger, libNamespace);
+        nvinfer1::initializePlugin<nvinfer1::plugin::SwigluPluginCreator>(logger, libNamespace);
         return true;
     }
 } // extern "C"

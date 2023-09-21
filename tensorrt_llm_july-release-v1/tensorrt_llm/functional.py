@@ -547,8 +547,25 @@ def swiglu(input: Tensor) -> Tensor:
     Returns:
         The tensor produced by the activation layer.
     '''
-    x, gate = chunk(input, 2, dim=-1)
-    return silu(gate) * x
+    
+    if not default_net().plugin_config.swiglu_plugin:
+        x, gate = chunk(input, 2, dim=-1)
+        return silu(gate) * x
+    else:
+        plg_creator = trt.get_plugin_registry().get_plugin_creator(
+            'Swiglu', '1', TRT_LLM_PLUGIN_NAMESPACE)
+        assert plg_creator is not None
+
+        p_dtype = default_net().plugin_config.swiglu_plugin
+        pf_type = trt.PluginField(
+            "type_id", np.array([int(str_dtype_to_trt(p_dtype))], np.int32),
+            trt.PluginFieldType.INT32)
+        pfc = trt.PluginFieldCollection([pf_type])
+        swiglu_plug = plg_creator.create_plugin("swiglu", pfc)
+
+        plug_inputs = [input.trt_tensor]
+        layer = default_trtnet().add_plugin_v2(plug_inputs, swiglu_plug)
+        return _create_tensor(layer.get_output(0), layer)
 
 
 def cast(input: Tensor, dtype: Union[str, trt.DataType]):
@@ -2715,7 +2732,10 @@ def gpt_attention(
     mask_type: int = 1,
     kv_cache_block_pointers: Tensor = None,
     host_input_lengths: Tensor = None,  # for in-flight batching
-    host_request_types: Tensor = None  # for in-flight batching
+    host_request_types: Tensor = None,  # for in-flight batching
+    max_position_embeddings: int = 2048,
+    use_dynamic_ntk: bool = False,
+    use_logn_attn: bool = False
 ) -> Tuple[Tensor]:
     '''
     Add an operation that performs the multi-head attention in GPT-like models.
@@ -2822,6 +2842,9 @@ def gpt_attention(
             generation phase. Its shape is [batch_size]. See Inflight Batching
             in doc/functional.py,
 
+        max_position_embeddings: int = 2048
+            The seq_length for qwen dynamic ntk and logn attn.
+
     Returns:
         The tensor produced by that layer.
     '''
@@ -2869,25 +2892,49 @@ def gpt_attention(
     multi_query_mode = trt.PluginField(
         "multi_query_mode", np.array(np.int8(multi_query_mode), dtype=np.int8),
         trt.PluginFieldType.INT8)
+    # int8_kv_cache = trt.PluginField("int8_kv_cache",
+    #                                 np.array(use_int8_kv_cache, dtype=np.int32),
+    #                                 trt.PluginFieldType.INT32)
+    # fp8_kv_cache = trt.PluginField("fp8_kv_cache",
+    #                                np.array(use_fp8_kv_cache, dtype=np.int32),
+    #                                trt.PluginFieldType.INT32)
     int8_kv_cache = trt.PluginField("int8_kv_cache",
-                                    np.array(use_int8_kv_cache, dtype=np.int32),
-                                    trt.PluginFieldType.INT32)
+                                    np.array(np.int8(use_int8_kv_cache), dtype=np.int8),
+                                    trt.PluginFieldType.INT8)
     fp8_kv_cache = trt.PluginField("fp8_kv_cache",
-                                   np.array(use_fp8_kv_cache, dtype=np.int32),
-                                   trt.PluginFieldType.INT32)
+                                   np.array(np.int8(use_fp8_kv_cache), dtype=np.int8),
+                                   trt.PluginFieldType.INT8)
     paged_kv_cache = trt.PluginField(
         "paged_kv_cache",
-        np.array(default_net().plugin_config.paged_kv_cache, dtype=np.int32),
-        trt.PluginFieldType.INT32)
-    in_flight_batching = trt.PluginField(
-        "in_flight_batching",
-        np.array(default_net().plugin_config.in_flight_batching,
-                 dtype=np.int32), trt.PluginFieldType.INT32)
+        np.array(np.int8(default_net().plugin_config.paged_kv_cache), dtype=np.int8),
+        trt.PluginFieldType.INT8)
+    # paged_kv_cache = trt.PluginField(
+    #     "paged_kv_cache",
+    #     np.array(default_net().plugin_config.paged_kv_cache, dtype=np.int32),
+    #     trt.PluginFieldType.INT32)
+    # in_flight_batching = trt.PluginField(
+    #     "in_flight_batching",
+    #     np.array(default_net().plugin_config.in_flight_batching,
+    #              dtype=np.int32), trt.PluginFieldType.INT32)
+    in_flight_batching = trt.PluginField("in_flight_batching",
+                np.array(np.int8(default_net().plugin_config.in_flight_batching),
+                dtype=np.int8), trt.PluginFieldType.INT8)
+    max_position_embeddings = trt.PluginField("max_position_embeddings",
+                                   np.array(max_position_embeddings, dtype=np.int32),
+                                   trt.PluginFieldType.INT32)
+    use_dynamic_ntk = trt.PluginField(
+        "use_dynamic_ntk", np.array(np.int8(use_dynamic_ntk), dtype=np.int8),
+        trt.PluginFieldType.INT8)
+    use_logn_attn = trt.PluginField(
+        "use_logn_attn", np.array(np.int8(use_logn_attn), dtype=np.int8),
+        trt.PluginFieldType.INT8)
+    
     pfc = trt.PluginFieldCollection([
         nheads, head_size, unidirectional, q_scaling, rotary_embedding_dim,
         neox_rotary_style, context_fmha_type, multi_block_mode,
         multi_query_mode, int8_kv_cache, fp8_kv_cache, remove_input_padding,
-        mask_type, paged_kv_cache, pf_type, in_flight_batching
+        mask_type, paged_kv_cache, pf_type, in_flight_batching, max_position_embeddings,
+        use_dynamic_ntk, use_logn_attn
     ])
 
     attn_plug = attn_plg_creator.create_plugin("causal_attn", pfc)
@@ -3201,22 +3248,46 @@ def rms_norm(input: Tensor,
 
     TODO: Document!
     '''
-    normalized_shape = [normalized_shape] if isinstance(
-        normalized_shape, int) else normalized_shape
+    if not default_net().plugin_config.rmsnorm_plugin:
+        normalized_shape = [normalized_shape] if isinstance(
+            normalized_shape, int) else normalized_shape
 
-    dim = tuple([-i - 1 for i in range(len(normalized_shape))])
+        dim = tuple([-i - 1 for i in range(len(normalized_shape))])
 
-    with precision("float32"):
-        varx = pow(input, 2.0)
-        varx = varx.mean(dim, keepdim=True)
-        denom = varx + eps
-        denom = denom.sqrt()
-        y = input / denom
+        with precision("float32"):
+            varx = pow(input, 2.0)
+            varx = varx.mean(dim, keepdim=True)
+            denom = varx + eps
+            denom = denom.sqrt()
+            y = input / denom
 
-    if weight is not None:
-        y = y * weight
+        if weight is not None:
+            y = y * weight
 
-    return y
+        return y
+    else:
+        plg_creator = trt.get_plugin_registry().get_plugin_creator(
+            'Rmsnorm', '1', TRT_LLM_PLUGIN_NAMESPACE)
+        assert plg_creator is not None
+
+        eps = trt.PluginField("eps", np.array(eps, dtype=np.float32),
+                              trt.PluginFieldType.FLOAT32)
+        p_dtype = default_net().plugin_config.rmsnorm_plugin
+        pf_type = trt.PluginField(
+            "type_id", np.array([int(str_dtype_to_trt(p_dtype))], np.int32),
+            trt.PluginFieldType.INT32)
+        pfc = trt.PluginFieldCollection([eps, pf_type])
+        rmsnorm_plug = plg_creator.create_plugin("rmsnorm", pfc)
+
+        normalized_shape = [normalized_shape] if isinstance(
+            normalized_shape, int) else normalized_shape
+        if weight is None:
+            weight = constant(
+                np.ones(normalized_shape, dtype=str_dtype_to_np(p_dtype)))
+
+        plug_inputs = [input.trt_tensor, weight.trt_tensor]
+        layer = default_trtnet().add_plugin_v2(plug_inputs, rmsnorm_plug)
+        return _create_tensor(layer.get_output(0), layer)
 
 
 def generate_alibi_slopes(num_heads: int) -> Tensor:

@@ -31,12 +31,18 @@ rm -rf "${BUILD_DIR}/tensorrt_llm/plugins"
 
 cmake \
     -DCMAKE_BUILD_TYPE=Release \
-    -DBUILD_PYT=OFF \
-    -DTRT_LIB_DIR=/usr/lib/x86_64-linux-gnu/ \
+    -DBUILD_PYT=ON \
     -DNCCL_LIB_DIR=/usr/lib/x86_64-linux-gnu/ \
     -DCUDNN_ROOT_DIR=/usr/lib/x86_64-linux-gnu/ \
     ..
 
+# cmake \
+#     -DCMAKE_BUILD_TYPE=Release \
+#     -DBUILD_PYT=OFF \
+#     -DTRT_LIB_DIR=/usr/lib/x86_64-linux-gnu/ \
+#     -DNCCL_LIB_DIR=/usr/lib/x86_64-linux-gnu/ \
+#     -DCUDNN_ROOT_DIR=/usr/lib/x86_64-linux-gnu/ \
+#     ..
 make -j"$(grep -c ^processor /proc/cpuinfo)" tensorrt_llm tensorrt_llm_static nvinfer_plugin
 
 popd

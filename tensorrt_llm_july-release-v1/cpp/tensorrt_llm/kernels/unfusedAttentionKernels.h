@@ -72,17 +72,17 @@ void invokeTransposeAttentionOutRemovePadding(T* src, T* dst, const int valid_wo
     const int int8_mode, cudaStream_t stream);
 
 template <typename T>
-void invokeAddFusedQKVBiasTranspose(T* q_buf, T* k_buf, T* v_buf, T* QKV, const T* qkv_bias, const int* seq_lens,
+void invokeAddFusedQKVBiasTranspose(T* q_buf, T* k_buf, T* v_buf, T* QKV, const T* qkv_bias, const int* seq_lens, const int past_kv_len,
     const int* padding_offset, const int batch_size, const int seq_len, const int token_num, const int head_num,
-    const int size_per_head, const int rotary_embedding_dim, const int neox_rotary_style, const float* scale,
-    const int int8_mode, const bool multi_query_mode, cudaStream_t stream);
+    const int size_per_head, const int rotary_embedding_dim, const int max_position_embeddings, const int neox_rotary_style, const float* scale,
+    const int int8_mode, const bool multi_query_mode, const bool use_dynamic_ntk, const bool use_logn_attn, cudaStream_t stream);
 
 template <typename T>
 void invokeAddFusedQKVBiasTranspose(T* q_buf, T* k_buf, T* v_buf, T* QKV, const T* qkv_bias, const int* seq_lens,
     const int* padding_offset, const int batch_size, const int seq_len, const int token_num, const int head_num,
     const int size_per_head, const bool multi_query_mode, cudaStream_t stream)
 {
-    invokeAddFusedQKVBiasTranspose(q_buf, k_buf, v_buf, QKV, qkv_bias, seq_lens, padding_offset, batch_size, seq_len,
+    invokeAddFusedQKVBiasTranspose(q_buf, k_buf, v_buf, QKV, qkv_bias, seq_lens, 0, padding_offset, batch_size, seq_len,
         token_num, head_num, size_per_head, 0, false, (float*) nullptr, 0, multi_query_mode, stream);
 }
 
@@ -92,9 +92,20 @@ void invokeAddFusedQKVBiasTranspose(T* q_buf, T* k_buf, T* v_buf, T* QKV, const 
     const int size_per_head, const int rotary_embedding_dim, const int neox_rotary_style, const float* scale,
     const int int8_mode, const bool multi_query_mode, cudaStream_t stream)
 {
-    invokeAddFusedQKVBiasTranspose(q_buf, k_buf, v_buf, QKV, (const T*) nullptr, seq_lens, padding_offset, batch_size,
-        seq_len, token_num, head_num, size_per_head, rotary_embedding_dim, neox_rotary_style, scale, int8_mode,
-        multi_query_mode, stream);
+    invokeAddFusedQKVBiasTranspose(q_buf, k_buf, v_buf, QKV, (const T*) nullptr, seq_lens, 0, padding_offset, batch_size,
+        seq_len, token_num, head_num, size_per_head, rotary_embedding_dim, 2048, neox_rotary_style, scale, int8_mode,
+        false, false, multi_query_mode, stream);
+}
+//for qwen
+template <typename T>
+void invokeAddFusedQKVBiasTranspose(T* q_buf, T* k_buf, T* v_buf, T* QKV, const int* seq_lens, const int past_kv_len,
+    const int* padding_offset, const int batch_size, const int seq_len, const int token_num, const int head_num,
+    const int size_per_head, const int rotary_embedding_dim, const int max_position_embeddings, const int neox_rotary_style, const float* scale,
+    const int int8_mode, const bool multi_query_mode, const bool use_dynamic_ntk, const bool use_logn_attn, cudaStream_t stream)
+{
+    invokeAddFusedQKVBiasTranspose(q_buf, k_buf, v_buf, QKV, (const T*) nullptr, seq_lens, past_kv_len, 
+        padding_offset, batch_size, seq_len, token_num, head_num, size_per_head, rotary_embedding_dim, max_position_embeddings,
+        neox_rotary_style, scale, int8_mode, multi_query_mode, use_dynamic_ntk, use_logn_attn, stream);
 }
 
 template <typename T, typename KVCacheBuffer>

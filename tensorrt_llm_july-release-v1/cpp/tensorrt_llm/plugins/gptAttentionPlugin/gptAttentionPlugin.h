@@ -43,7 +43,7 @@ public:
         bool neox_rotary_style, tensorrt_llm::kernels::ContextFMHAType context_fmha_type, bool multi_block_mode,
         bool multi_query_mode, bool int8_kv_cache, bool fp8_kv_cache, bool remove_input_padding,
         tensorrt_llm::kernels::AttentionMaskType mask_type, bool paged_kv_cache, nvinfer1::DataType type,
-        bool in_flight_batching);
+        bool in_flight_batching, int max_position_embeddings=2048, bool use_dynamic_ntk=false, bool use_logn_attn=false);
 
     GPTAttentionPlugin(const void* data, size_t length);
 

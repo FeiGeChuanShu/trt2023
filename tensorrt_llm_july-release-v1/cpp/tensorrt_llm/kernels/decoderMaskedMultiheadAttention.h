@@ -175,6 +175,11 @@ struct Multihead_attention_params : public Multihead_attention_params_base<T>
 
     // required in case of masked attention with different length
     const int* length_per_sample = nullptr;
+
+    // for qwen dynamic ntk and logn attn
+    int max_position_embeddings = 2048;
+    bool use_dynamic_ntk = false;
+    bool use_logn_attn = false;
 };
 template <class T>
 using Masked_multihead_attention_params = Multihead_attention_params<T>;

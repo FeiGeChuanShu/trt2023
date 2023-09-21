@@ -21,7 +21,7 @@ def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument('--max_output_len', type=int, required=True)
     parser.add_argument('--log_level', type=str, default='error')
-    parser.add_argument('--engine_dir', type=str, default='llama_outputs')
+    parser.add_argument('--engine_dir', type=str, default='trt_engines')
     parser.add_argument('--tokenizer_dir',
                         type=str,
                         default=".",
@@ -54,7 +54,7 @@ def parse_arguments():
 def generate(
     max_output_len: int,
     log_level: str = 'error',
-    engine_dir: str = 'llama_outputs',
+    engine_dir: str = 'trt_engines',
     input_text: str = 'Born in north-east France, Soyer trained as a',
     input_file: str = None,
     output_csv: str = None,

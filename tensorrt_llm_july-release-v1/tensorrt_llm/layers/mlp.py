@@ -71,3 +71,40 @@ class GatedMLP(MLP):
         gate = self.gate(hidden_states)
         output = self.proj(inter * gate)
         return output
+
+
+class QWenMLP(Module):
+
+    def __init__(self,
+                 hidden_size,
+                 ffn_hidden_size,
+                 hidden_act,
+                 bias=True,
+                 dtype=None,
+                 tp_group=None,
+                 tp_size=1):
+        super().__init__()
+        if hidden_act != 'swiglu':
+            raise ValueError(
+                'only support activation function: {}'.format(hidden_act))
+        self.gate_up_proj = ColumnLinear(hidden_size,
+                               ffn_hidden_size*2,
+                               bias=bias,
+                               dtype=dtype,
+                               tp_group=tp_group,
+                               tp_size=tp_size,
+                               gather_output=False)
+        self.proj = RowLinear(ffn_hidden_size,
+                              hidden_size,
+                              bias=bias,
+                              dtype=dtype,
+                              tp_group=tp_group,
+                              tp_size=tp_size)
+        self.hidden_act = hidden_act
+        self.dtype = dtype
+
+    def forward(self, hidden_states):
+        inter = self.gate_up_proj(hidden_states)
+        inter = ACT2FN[self.hidden_act](inter)
+        output = self.proj(inter)
+        return output

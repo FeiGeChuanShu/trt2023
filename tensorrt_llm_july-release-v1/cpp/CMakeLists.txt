@@ -125,8 +125,14 @@ include_directories(${CUDA_INCLUDE_DIRS} ${CUDNN_ROOT_DIR}/include
                     ${NCCL_INCLUDE_DIR} ${3RDPARTY_DIR}/cutlass/include)
 
 # TRT dependencies
-set_ifndef(TRT_LIB_DIR ${CMAKE_BINARY_DIR})
-set_ifndef(TRT_INCLUDE_DIR /usr/include/x86_64-linux-gnu)
+#set_ifndef(TRT_LIB_DIR ${CMAKE_BINARY_DIR})
+#set_ifndef(TRT_LIB_DIR /root/workspace/tmp/TensorRT-9.0.1.4/lib)
+set_ifndef(TRT_LIB_DIR /usr/local/TensorRT-9.0.0.2/lib)
+#set_ifndef(TRT_INCLUDE_DIR /usr/include/x86_64-linux-gnu)
+#set_ifndef(TRT_INCLUDE_DIR /root/workspace/tmp/TensorRT-9.0.1.4/include)
+set_ifndef(TRT_INCLUDE_DIR /usr/local/TensorRT-9.0.0.2/include)
+message(${TRT_LIB_DIR})
+message(${TRT_INCLUDE_DIR})
 set(TRT_LIB nvinfer)
 find_library_create_target(${TRT_LIB} nvinfer SHARED ${TRT_LIB_DIR})
 find_library_create_target(nvuffparser nvparsers SHARED ${TRT_LIB_DIR})

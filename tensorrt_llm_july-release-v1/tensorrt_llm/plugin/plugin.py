@@ -54,7 +54,9 @@ class PluginConfig(object):
         self.paged_kv_cache = False
         self.lookup_plugin = False
         self.in_flight_batching = False
-
+        self.rmsnorm_plugin = False
+        self.swiglu_plugin = False
+        
     def enable_qk_half_accum(self):
         self.attention_qk_half_accumulation = True
         logger.info(f"Attention BMM1(QK) accumulation type is set to FP16")
@@ -137,4 +139,11 @@ class PluginConfig(object):
 
     def set_lookup_plugin(self, dtype='float16'):
         self.lookup_plugin = dtype
+        return self
+    
+    def set_rmsnorm_plugin(self, dtype='float16'):
+        self.rmsnorm_plugin = dtype
+        return self
+    def set_swiglu_plugin(self, dtype='float16'):
+        self.swiglu_plugin = dtype
         return self

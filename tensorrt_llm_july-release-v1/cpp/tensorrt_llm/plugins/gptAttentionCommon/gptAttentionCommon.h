@@ -41,7 +41,8 @@ public:
     GPTAttentionPluginCommon(int num_heads, int head_size, int unidirectional, float q_scaling,
         int rotary_embedding_dim, bool neox_rotary_style, tensorrt_llm::kernels::ContextFMHAType context_fmha_type,
         bool multi_block_mode, bool multi_query_mode, bool int8_kv_cache, bool fp8_kv_cache, bool remove_input_padding,
-        tensorrt_llm::kernels::AttentionMaskType mask_type, bool paged_kv_cache, nvinfer1::DataType type);
+        tensorrt_llm::kernels::AttentionMaskType mask_type, bool paged_kv_cache, nvinfer1::DataType type, 
+        int max_position_embeddings=2048, bool use_dynamic_ntk=false, bool use_logn_attn=false);
 
     GPTAttentionPluginCommon(const void* data, size_t length);
 
@@ -83,6 +84,17 @@ protected:
         int32_t const* input_lengths, float const* kv_scale_orig_quant, float const* kv_scale_quant_orig,
         T* context_buf_, void* key_value_cache, void* block_pointers, int32_t batch_size, int32_t num_tokens,
         int32_t tokens_per_block, int32_t max_blocks_per_sequence, void* workspace, cudaStream_t stream);
+
+    //for qwen
+    template <typename T, typename KVCacheBuffer>
+    int enqueueContext(T const* attention_input,
+        int32_t input_seq_length, // padded input length
+        int32_t max_seq_length,   // cache capacity
+        int32_t const* input_lengths, int32_t past_kv_length, float const* kv_scale_orig_quant, 
+        float const* kv_scale_quant_orig, T* context_buf_, void* key_value_cache, void* block_pointers, 
+        int32_t batch_size, int32_t num_tokens, int32_t tokens_per_block, int32_t max_blocks_per_sequence, 
+        void* workspace, cudaStream_t stream);
+    
     template <typename T, typename KVCacheBuffer>
     int enqueueGeneration(T const* attention_input,
         int32_t input_seq_length, // padded input length
@@ -110,6 +122,9 @@ protected:
     bool mPagedKVCache = false;
     bool mFp8KVCache = false;
     nvinfer1::DataType mType;
+    int mMaxPositionEmbeddings;
+    bool mUseDynamicNtk = false;
+    bool mUseLognAttn = false;
 
     // fmha runner (disable by default)
     // flag: disabled = 0, enabled = 1, enabled with fp32 accumulation = 2
