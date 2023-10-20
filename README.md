@@ -153,13 +153,14 @@ Qwen-7B结构与LLaMA相似的架构。使用来自公开的超过 2.2 万亿个
 
 ### 开发与优化过程
 - **1. QWenMLP**  
-原TensorRT-LLM中的`GatedMLP`中对输入数据进行了`self.fc`和`self.gate`两个`linear`运算，然后使用了`silu`激活函数。整个网络包含32个此结构，在Nsight下发现GatedMLP的耗时情况如下图所示：
+原TensorRT-LLM中的`GatedMLP`中对输入数据进行了`self.fc`和`self.gate`两个`linear`运算，然后使用了`silu`激活函数。整个网络包含32个此结构，
 运行以下代码生成Nsight Profiling文件:  
 
 ```
 nsys profile -o qwen python3 run.py --max_output_len=8 --tokenizer_dir ./model --engine_dir=./trt_engines/qwen/7B/trt_engines/fp16/1-gpu/
 ```  
 
+在Nsight下发现GatedMLP的耗时情况如下图所示：  
 <div align=center>
 <img src="./doc/GatedMLP.jpg"/>
 </div>
